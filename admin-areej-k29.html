@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>لوحة الإدارة</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#fffaf0;color:#352b1b;font-family:Tahoma,Arial}
+header{background:#fff;border-bottom:1px solid #eadfc9;padding:16px;font-size:24px;color:#b58a36;font-weight:bold}
+main{max-width:1000px;margin:20px auto;padding:12px}
+.box{background:#fff;border:1px solid #eadfc9;border-radius:16px;padding:18px;margin-bottom:18px}
+h2{color:#92702d;font-size:20px;margin-top:0}
+input,select,textarea{width:100%;padding:12px;margin:6px 0 12px;border:1px solid #dfd2b8;border-radius:10px;font:inherit}
+button{border:0;border-radius:10px;padding:11px 15px;background:#b58a36;color:#fff;font-weight:bold;cursor:pointer;margin:3px;font-family:inherit}
+button:disabled{opacity:.5}
+.del{background:#a43c32}.light{background:#eee5d5;color:#382f20}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.item{display:flex;gap:12px;align-items:center;border:1px solid #eee2cc;padding:10px;border-radius:12px;margin:10px 0;flex-wrap:wrap}
+.item img{width:75px;height:75px;object-fit:cover;border-radius:9px;background:#f0e8d8}
+.grow{flex:1;min-width:180px}.small{font-size:13px;color:#776d5c}
+#status{background:#f4ecd9;padding:12px;border-radius:10px;margin:12px 0}
+.item select{width:auto;margin:3px}
+.imgs{display:flex;flex-wrap:wrap;gap:8px}
+.imgs span{text-align:center;border:1px solid #eee2cc;border-radius:10px;padding:4px}
+.imgs img{width:70px;height:70px;object-fit:cover;border-radius:8px;display:block}
+.imgs button{padding:2px 8px;margin:2px}
+</style>
+</head>
+<body>
+<header>لوحة الإدارة</header>
+<main>
+<div id="status">يتم الاتصال…</div>
+
+<div class="box">
+ <h2 id="formTitle">إضافة منتج جديد</h2>
+ <input type="hidden" id="editId">
+ <div class="grid">
+  <div><label>اسم المنتج</label><input id="name"></div>
+  <div><label>المشروع</label><select id="brand"><option>نفحات الطيب</option><option>بصمة سعادة</option></select></div>
+  <div id="catWrap"><label>القسم</label><select id="category"><option>عطور</option><option>مخمريات</option><option>بخور</option></select></div>
+  <div><label>السعر (ر.ع)</label><input id="price" type="number" min="0" step="0.001"></div>
+  <div><label>الكمية</label><input id="stock" type="number" min="0" step="1"></div>
+ </div>
+ <label>وصف المنتج</label><textarea id="description"></textarea>
+ <label>صور المنتج (حتى 8 صور، وتُحسَّن جودتها تلقائياً)</label>
+ <input id="photos" type="file" accept="image/*" multiple>
+ <div id="photoInfo" class="small"></div>
+ <div id="curImgs" class="imgs"></div>
+ <p class="small">الصورة الأولى هي الصورة الرئيسية. اضغط ★ لجعل أي صورة رئيسية، و× لحذفها.</p>
+ <button id="save">حفظ المنتج</button>
+ <button class="light" data-act="clear">إلغاء</button>
+</div>
+
+<div class="box"><h2>المنتجات</h2><div id="products">جارٍ التحميل…</div></div>
+<div class="box"><h2>طلبات الزبائن</h2>
+ <p class="small">عند اختيار «قيد التجهيز» تُخصم الكميات من المخزون مرة واحدة فقط لكل طلب.</p>
+ <div id="orders">جارٍ التحميل…</div></div>
+</main>
+
+<script>
+const DB="https://nafahat-basma-store-default-rtdb.firebaseio.com";
+const $=id=>document.getElementById(id);
+const say=t=>$("status").textContent=t;
+const safe=(t="")=>String(t).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const B2="بصمة سعادة",B1="نفحات الطيب",STATUSES=["جديد","قيد التجهيز","تم التسليم","ملغي"],MAXIMG=8;
+const NOIMG="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='75' height='75'><rect width='75' height='75' fill='%23f0e8d8'/></svg>";
+let products={},orders={},chosenFiles=[],keepImages=[];
+
+/* ---- اتصال مباشر بقاعدة البيانات ---- */
+async function api(method,path,data){
+ const r=await fetch(DB+"/"+path+".json",{method,body:data===undefined?undefined:JSON.stringify(data)});
+ if(!r.ok)throw new Error(r.status===401||r.status===403?"قواعد قاعدة البيانات تمنع هذه العملية":"خطأ "+r.status);
+ return r.json();
+}
+async function load(){
+ try{
+  products=await api("GET","products/meta")||{};
+  orders=await api("GET","orders")||{};
+  renderProducts();renderOrders();if(!$("save").disabled)say("متصل ✔");
+ }catch(e){say("تعذر الاتصال: "+e.message)}
+}
+
+/* ---- معالجة الصور: تكبير الدقة للحد المناسب + تحسين تلقائي ---- */
+function enhance(cv){
+ const w=cv.width,h=cv.height,ctx=cv.getContext("2d"),im=ctx.getImageData(0,0,w,h),s=im.data;
+ const hist=new Uint32Array(256),n=w*h;
+ for(let i=0;i<s.length;i+=4)hist[(s[i]*.3+s[i+1]*.59+s[i+2]*.11)|0]++;
+ let acc=0,lo=0,hi=255;
+ for(let v=0;v<256;v++){acc+=hist[v];if(acc>n*.005){lo=v;break}}
+ acc=0;for(let v=255;v>=0;v--){acc+=hist[v];if(acc>n*.005){hi=v;break}}
+ lo=Math.min(lo,50);hi=Math.max(hi,205);
+ const g=255/(hi-lo);
+ for(let i=0;i<s.length;i+=4)for(let c=0;c<3;c++)s[i+c]=(s[i+c]-lo)*g;
+ const o=new Uint8ClampedArray(s),k=.35,r=w*4;
+ for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){
+  const p=y*r+x*4;
+  for(let c=0;c<3;c++){const q=p+c;s[q]=o[q]+k*(4*o[q]-o[q-4]-o[q+4]-o[q-r]-o[q+r])}
+ }
+ ctx.putImageData(im,0,0);
+}
+function loadImg(src){
+ return new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=()=>rej(new Error("تعذر قراءة الصورة"));i.src=src});
+}
+function draw(img,max,quality,doEnhance){
+ const r=Math.min(1,max/Math.max(img.width,img.height));
+ const c=document.createElement("canvas");
+ c.width=Math.max(1,Math.round(img.width*r));c.height=Math.max(1,Math.round(img.height*r));
+ const x=c.getContext("2d");x.imageSmoothingEnabled=true;x.imageSmoothingQuality="high";
+ x.fillStyle="#fff";x.fillRect(0,0,c.width,c.height);
+ x.drawImage(img,0,0,c.width,c.height);
+ if(doEnhance)enhance(c);
+ return c.toDataURL("image/jpeg",quality);
+}
+async function processFile(file){
+ const url=URL.createObjectURL(file);
+ try{return draw(await loadImg(url),1400,.88,true)}finally{URL.revokeObjectURL(url)}
+}
+async function makeThumb(dataUrl){return draw(await loadImg(dataUrl),520,.82,false)}
+
+$("photos").onchange=()=>{chosenFiles=[...$("photos").files];$("photoInfo").textContent="صور جديدة: "+chosenFiles.length};
+
+function toggleCat(){$("catWrap").style.display=$("brand").value===B2?"none":""}
+$("brand").onchange=toggleCat;
+function clearForm(){
+ ["editId","name","price","stock","description"].forEach(i=>$(i).value="");
+ $("category").value="عطور";$("brand").value=B1;toggleCat();$("photos").value="";
+ $("photoInfo").textContent="";$("curImgs").innerHTML="";chosenFiles=[];keepImages=[];
+ $("formTitle").textContent="إضافة منتج جديد";
+}
+function showCur(){
+ $("curImgs").innerHTML=keepImages.map((u,i)=>`<span><img src="${safe(u)}" alt="">
+  <button class="light" data-act="first" data-id="${i}" title="رئيسية">★</button><button class="del" data-act="rmimg" data-id="${i}">×</button></span>`).join("");
+}
+
+$("save").onclick=async()=>{
+ const name=$("name").value.trim(),price=Number($("price").value),stock=Number($("stock").value);
+ if(!name||$("price").value===""||$("stock").value===""||price<0||stock<0||!Number.isInteger(stock)){alert("أدخل الاسم والسعر والكمية بشكل صحيح.");return}
+ if(keepImages.length+chosenFiles.length>MAXIMG){alert("الحد الأقصى "+MAXIMG+" صور للمنتج.");return}
+ $("save").disabled=true;
+ try{
+  const id=$("editId").value||("p"+Date.now().toString(36));
+  const images=[...keepImages];
+  for(let i=0;i<chosenFiles.length;i++){say("جارٍ تحسين ورفع الصورة "+(i+1)+" من "+chosenFiles.length+"…");images.push(await processFile(chosenFiles[i]))}
+  say("جارٍ الحفظ…");
+  const thumb=images.length?await makeThumb(images[0]):"";
+  if(images.length)await api("PUT","products/full/"+id,images);else await api("DELETE","products/full/"+id);
+  await api("PUT","products/meta/"+id,{
+   name,brand:$("brand").value,category:$("brand").value===B2?"هدايا":$("category").value,
+   price,stock,description:$("description").value.trim(),thumb,count:images.length,
+   createdAt:products[id]?.createdAt||Date.now(),updatedAt:Date.now()});
+  clearForm();$("save").disabled=false;await load();say("تم حفظ المنتج بنجاح ✔");
+ }catch(e){say("تعذر الحفظ: "+e.message)}
+ finally{$("save").disabled=false}
+};
+
+function renderProducts(){
+ const list=Object.entries(products);
+ if(!list.length){$("products").innerHTML="لا توجد منتجات.";return}
+ $("products").innerHTML=list.map(([id,p])=>`<div class="item">
+  <img src="${safe(p.thumb||NOIMG)}" alt="">
+  <div class="grow"><b>${safe(p.name)}</b>
+   <div class="small">${safe(p.brand||B1)} · ${safe(p.category)} | ${Number(p.price||0).toFixed(3)} ر.ع</div>
+   <div class="small">الكمية: ${Number(p.stock||0)} | الصور: ${Number(p.count||0)}</div></div>
+  <button class="light" data-act="edit" data-id="${id}">تعديل</button>
+  <button class="del" data-act="delp" data-id="${id}">حذف</button></div>`).join("");
+}
+async function editProduct(id){
+ const p=products[id];if(!p)return;
+ $("editId").value=id;$("name").value=p.name||"";
+ $("brand").value=p.brand||B1;toggleCat();$("category").value=p.category||"عطور";
+ $("price").value=p.price??0;$("stock").value=p.stock??0;$("description").value=p.description||"";
+ $("formTitle").textContent="تعديل المنتج";window.scrollTo({top:0,behavior:"smooth"});
+ keepImages=[];showCur();
+ if(Number(p.count)>0){
+  say("جارٍ تحميل صور المنتج…");$("save").disabled=true;
+  try{
+   const a=await api("GET","products/full/"+id);
+   keepImages=Array.isArray(a)?a.filter(Boolean):Object.values(a||{});
+   if(!keepImages.length&&p.thumb)keepImages=[p.thumb];
+   showCur();say("جاهز للتعديل.");
+  }catch(e){say("تعذر تحميل الصور: "+e.message)}
+  finally{$("save").disabled=false}
+ }
+}
+async function deleteProduct(id){
+ if(!confirm("حذف هذا المنتج؟"))return;
+ try{await api("DELETE","products/meta/"+id);await api("DELETE","products/full/"+id);await load();say("تم حذف المنتج.")}
+ catch(e){say("تعذر الحذف: "+e.message)}
+}
+
+function renderOrders(){
+ const list=Object.entries(orders).sort((a,b)=>(b[1].createdAt||0)-(a[1].createdAt||0));
+ if(!list.length){$("orders").innerHTML="لا توجد طلبات.";return}
+ $("orders").innerHTML=list.map(([id,o])=>{
+  const d=o.createdAt?new Date(o.createdAt).toLocaleString("ar-OM"):"";
+  return `<div class="item"><div class="grow">
+   <b>طلب ${safe(id.slice(-6))}</b> <span class="small">${safe(d)}</span>
+   <div class="small">الاسم: ${safe(o.customerName)}</div>
+   <div class="small">الهاتف: <a href="tel:${safe(o.phone)}">${safe(o.phone)}</a></div>
+   <div class="small">الدفع: ${safe(o.payment)}</div>
+   <div class="small">العنوان/ملاحظات: ${safe(o.notes||"-")}</div>
+   <div class="small">المنتجات: ${(o.items||[]).map(i=>"["+safe(i.brand||B1)+"] "+safe(i.name)+" × "+Number(i.qty)).join("، ")}</div>
+   <b>${Number(o.total||0).toFixed(3)} ر.ع</b></div>
+  <div><select data-act="status" data-id="${id}">${STATUSES.map(s=>`<option ${s===(o.status||"جديد")?"selected":""}>${s}</option>`).join("")}</select>
+  <button class="del" data-act="delo" data-id="${id}">حذف</button></div></div>`}).join("");
+}
+async function setStatus(id,s){
+ const o=orders[id];if(!o)return;
+ try{
+  if(s==="قيد التجهيز"&&!o.stockDeducted){
+   for(const i of o.items||[]){
+    const cur=await api("GET","products/meta/"+i.productId+"/stock");
+    if(cur!==null)await api("PUT","products/meta/"+i.productId+"/stock",Math.max(0,Number(cur)-Number(i.qty)));
+   }
+   await api("PATCH","orders/"+id,{stockDeducted:true});
+  }
+  await api("PATCH","orders/"+id,{status:s});await load();
+ }catch(e){say("تعذر التحديث: "+e.message)}
+}
+async function deleteOrder(id){
+ if(confirm("حذف الطلب؟")){try{await api("DELETE","orders/"+id);await load()}catch(e){say("تعذر الحذف: "+e.message)}}
+}
+
+document.addEventListener("click",e=>{
+ const el=e.target.closest("[data-act]");if(!el)return;
+ const a=el.dataset.act,id=el.dataset.id;
+ if(a==="clear")clearForm();
+ else if(a==="rmimg"){keepImages.splice(Number(id),1);showCur()}
+ else if(a==="first"){const i=Number(id);keepImages.unshift(keepImages.splice(i,1)[0]);showCur()}
+ else if(a==="edit")editProduct(id);
+ else if(a==="delp")deleteProduct(id);
+ else if(a==="delo")deleteOrder(id);
+});
+document.addEventListener("change",e=>{
+ const el=e.target.closest('[data-act="status"]');
+ if(el)setStatus(el.dataset.id,el.value);
+});
+window.addEventListener("error",e=>say("خطأ: "+e.message));
+load();setInterval(load,15000);
+</script>
+</body>
+</html>
